@@ -32,3 +32,89 @@ Tierra (M = 5.972×10²⁴ kg, R = 6371 km), torre a 300 km, órbita objetivo a 
 Se lanza con la v₀ de la transferencia, se circulariza en el apogeo y se simulan 2 vueltas más.
 El CSV (`output/headless.csv`) trae t, x, y, vx, vy, r, altura, rapidez, Ek, Ep, E total (J/kg), L (m²/s) y el evento
 (`lanzamiento`, `circularizacion`, `fin`). La consola imprime v₀, Δv_circ, Δv_total y el dictamen.
+
+## API pública de la librería de física (`src/physics/`)
+
+La librería no depende de la interfaz (no usa `document`, `window` ni `canvas`). Todas las funciones son **puras y deterministas** (mismo estado + mismo `dt` ⇒ mismo resultado; no hay aleatoriedad) y **todo está en unidades del SI**: metros, segundos, kilogramos, m/s, J/kg. Las conversiones (km, km/s, 10²⁴ kg) ocurren solo en la interfaz.
+
+Se importa todo desde un único punto de entrada:
+
+```js
+import { step, createInitialState, computeEnergy /* … */ } from './src/physics/index.js';
+```
+
+### Convenciones
+
+**Estado** `s` (objeto que `step` devuelve nuevo, sin modificar el anterior):
+
+| Campo | Significado | Unidad |
+|-------|-------------|--------|
+| `x`, `y` | posición respecto al centro del planeta | m |
+| `vx`, `vy` | velocidad | m/s |
+| `t` | tiempo transcurrido | s |
+
+**Parámetros** `p` (según la función, se usa solo un subconjunto):
+
+| Campo | Significado | Unidad |
+|-------|-------------|--------|
+| `M` | masa del planeta | kg |
+| `R` | radio del planeta | m |
+| `h` | altura de la torre sobre la superficie | m |
+| `v0` | rapidez de lanzamiento (horizontal) | m/s |
+| `atmosfera` | `true` activa el arrastre | — |
+| `altAtmosfera` | altura donde termina la atmósfera | m |
+| `rho0` | densidad del aire a nivel del suelo | kg/m³ |
+| `escalaAltura` | altura de escala de la densidad exponencial | m |
+| `Cd` | coeficiente de arrastre | adimensional |
+| `areaSobreMasa` | área frontal / masa del proyectil | m²/kg |
+
+### Constantes
+
+| Nombre | Valor | Unidad |
+|--------|-------|--------|
+| `G` | 6.674×10⁻¹¹ | N·m²/kg² |
+
+### Simulación
+
+| Función | Recibe | Devuelve |
+|---------|--------|----------|
+| `createInitialState(p)` | `p`: `{R, h, v0}` | Estado inicial en la cima de la torre, lanzado en horizontal: `{x:0, y:R+h, vx:v0, vy:0, t:0}` |
+| `step(s, p, dt)` | `s`: estado, `p`: `{M, R, atmosfera, …}`, `dt` (s) | Nuevo estado tras un paso de Euler semi-implícito (simpléctico). Suma gravedad y, si `p.atmosfera`, arrastre. No modifica `s`. |
+| `computeAcceleration(s, M)` | `s`: `{x, y}` (m), `M` (kg) | `{ax, ay}` en m/s², aceleración gravitatoria dirigida al centro |
+| `computeDragAcceleration(s, p)` | `s`: estado, `p`: `{atmosfera, R, altAtmosfera, rho0, escalaAltura, Cd, areaSobreMasa}` | `{ax, ay}` en m/s². `{0, 0}` si la atmósfera está apagada o el proyectil está fuera de ella (o bajo la superficie). Modelo provisional: densidad exponencial. |
+
+### Energía y velocidades características
+
+| Función | Recibe | Devuelve |
+|---------|--------|----------|
+| `computeEnergy(s, M)` | estado `s`, `M` (kg) | `{kinetic, potential, total, r, v}`: energías específicas en J/kg (por unidad de masa del proyectil), `r` en m, `v` en m/s. La energía potencial es negativa (cero en el infinito). |
+| `escapeVelocity(M, r)` | `M` (kg), `r` (m, distancia al centro) | Velocidad de escape en m/s |
+| `circularVelocity(M, r)` | `M` (kg), `r` (m) | Velocidad de órbita circular en m/s |
+| `angularMomentum(s)` | estado `s` | Momento angular específico `x·vy − y·vx` en m²/s |
+
+### Maniobras y clasificación (soluciones analíticas)
+
+| Función | Recibe | Devuelve |
+|---------|--------|----------|
+| `transferGeometry(p)` | `p`: `{M, R, h, v0}` | `{escape, E, L, r0, a, rApo, rPeri, ecc}`: geometría de la órbita de transferencia (el punto de lanzamiento es el perigeo). `E` en J/kg, `L` en m²/s, `r0`, `a`, `rApo`, `rPeri` en m, `ecc` adimensional. Si `E ≥ 0`: `escape: true`, `a = rApo = Infinity`, `ecc = 1`. |
+| `circularizationDeltaV(p)` | `p`: `{M, R, h, v0}` | `{deltaV, vApo, vCirc, geo}`: Δv necesario en el apogeo para circularizar (vis-viva), en m/s. Si hay escape: `deltaV = NaN`. |
+| `launchVelocityForApogee(M, r0, rApo)` | `M` (kg), `r0` (m, radio de lanzamiento), `rApo` (m, radio del apogeo deseado) | `v0` en m/s que da esa órbita de transferencia |
+| `applyCircularization(s, M)` | `s`: estado en el apogeo, `M` (kg) | `{newState, deltaV}`: estado con la velocidad escalada a la circular (misma dirección) y el Δv aplicado en m/s |
+| `classifyOutcome(p, tol = 0.02)` | `p`: `{M, R, h, v0}`, `tol`: excentricidad máxima para llamarla circular | `"impacto"`, `"eliptica"`, `"circular"` o `"escape"` |
+| `sweepLaunchVelocities(p, vMin, vMax, n = 120)` | `p`: `{M, R, h}`, `vMin`/`vMax` (m/s), `n` puntos | Arreglo `[{v0, outcome}]` con `v0` en m/s y `outcome` como en `classifyOutcome` |
+
+### Ejemplo de uso
+
+```js
+import {
+  createInitialState, step, computeEnergy, launchVelocityForApogee
+} from './src/physics/index.js';
+
+const M = 5.972e24, R = 6.371e6, h = 300e3;          // Tierra, torre a 300 km
+const v0 = launchVelocityForApogee(M, R + h, R + 1200e3);
+const p = { M, R, h, v0, atmosfera: false };
+
+let s = createInitialState(p);
+for (let i = 0; i < 600; i++) s = step(s, p, 1);      // 600 s con dt = 1 s
+console.log(s.t, computeEnergy(s, M).total);          // s, J/kg
+```
